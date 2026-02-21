@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -12,7 +12,8 @@ import {
   Zap,
 } from "lucide-react";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || "";
+const API_BASE = CONFIGURED_API_BASE || (process.env.NODE_ENV !== "production" ? "http://127.0.0.1:8000" : "");
 
 function renderMarkdown(md) {
   if (!md) return "";
@@ -29,6 +30,17 @@ function renderMarkdown(md) {
     .replace(/^(?!<h|<l|<hr)(.+)$/gm, (m) =>
       m.trim() ? `<p class="text-slate-700 leading-relaxed mb-2">${m}</p>` : "",
     );
+}
+
+function normalizeApiError(err, apiBase) {
+  const raw = err instanceof Error ? err.message : "Unknown error";
+  if (!apiBase) {
+    return "Backend URL is missing. Set NEXT_PUBLIC_API_BASE_URL in Vercel project settings and redeploy.";
+  }
+  if (raw.includes("Failed to fetch") || raw.includes("NetworkError") || raw.includes("Load failed")) {
+    return `Cannot reach backend at ${apiBase}. Confirm backend is deployed and CORS/network access is allowed.`;
+  }
+  return raw;
 }
 
 function DropZone({ label, accept, file, onFile, onClear, icon: Icon }) {
@@ -126,12 +138,42 @@ export default function Home() {
   const [status, setStatus] = useState("idle");
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
+  const [apiStatus, setApiStatus] = useState(API_BASE ? "checking" : "missing");
 
   const [sourceMarkdown, setSourceMarkdown] = useState("");
   const [reconstructedMarkdown, setReconstructedMarkdown] = useState("");
   const [extractedJson, setExtractedJson] = useState(null);
 
-  const canProcess = templateFile && sourceFile && status !== "uploading" && status !== "processing";
+  useEffect(() => {
+    if (!API_BASE) return;
+
+    let cancelled = false;
+    const checkHealth = async () => {
+      setApiStatus("checking");
+      try {
+        const res = await fetch(`${API_BASE}/api/health`);
+        if (!cancelled) {
+          setApiStatus(res.ok ? "ok" : "down");
+        }
+      } catch {
+        if (!cancelled) {
+          setApiStatus("down");
+        }
+      }
+    };
+
+    checkHealth();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canProcess =
+    templateFile &&
+    sourceFile &&
+    status !== "uploading" &&
+    status !== "processing" &&
+    apiStatus === "ok";
 
   const processDocument = async () => {
     if (!canProcess) return;
@@ -174,7 +216,7 @@ export default function Home() {
       setStatus("done");
     } catch (err) {
       setStatus("error");
-      setErrorMessage(err instanceof Error ? err.message : "Processing failed.");
+      setErrorMessage(normalizeApiError(err, API_BASE));
     }
   };
 
@@ -229,7 +271,7 @@ export default function Home() {
       URL.revokeObjectURL(url);
     } catch (err) {
       setStatus("error");
-      setErrorMessage(err instanceof Error ? err.message : "Word export failed.");
+      setErrorMessage(normalizeApiError(err, API_BASE));
     }
   };
 
@@ -241,11 +283,21 @@ export default function Home() {
     error: "Error",
   }[status];
 
+  const apiStatusLabel = {
+    missing: "Backend URL not configured",
+    checking: "Checking backend...",
+    ok: "Backend reachable",
+    down: "Backend unreachable",
+  }[apiStatus];
+
   return (
     <div className="min-h-screen bg-slate-50 p-6 md:p-8 space-y-6">
       <header className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
         <h1 className="text-lg font-bold text-slate-900">Document Formatter Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-1">Connected to FastAPI backend: {API_BASE}</p>
+        <p className="text-sm text-slate-500 mt-1">Backend: {API_BASE || "[unset]"}</p>
+        <p className={`text-xs mt-1 ${apiStatus === "ok" ? "text-emerald-600" : "text-amber-600"}`}>
+          {apiStatusLabel}
+        </p>
       </header>
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
