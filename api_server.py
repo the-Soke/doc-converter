@@ -13,10 +13,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from doc_formatter import build_extraction_chain, parse_to_markdown as parse_source_markdown
-from doc_reconstructor import reconstruct
-from doc_to_word import build_word_document
-
 load_dotenv()
 
 logging.basicConfig(
@@ -62,6 +58,12 @@ async def format_document(
 ) -> FormatResponse:
     if not os.getenv("GROQ_API_KEY"):
         raise HTTPException(status_code=500, detail="GROQ_API_KEY is not set.")
+    try:
+        from doc_formatter import build_extraction_chain, parse_to_markdown as parse_source_markdown
+        from doc_reconstructor import reconstruct
+    except Exception as exc:
+        log.exception("Backend import failed during /api/format")
+        raise HTTPException(status_code=500, detail=f"Backend import failed: {exc}") from exc
 
     with tempfile.TemporaryDirectory(prefix="docfmt_") as tmp:
         temp_dir = Path(tmp)
@@ -101,6 +103,11 @@ async def format_document(
 
 @app.post("/api/export/word")
 def export_word(payload: ExportWordRequest):
+    try:
+        from doc_to_word import build_word_document
+    except Exception as exc:
+        log.exception("Backend import failed during /api/export/word")
+        raise HTTPException(status_code=500, detail=f"Backend import failed: {exc}") from exc
     with tempfile.TemporaryDirectory(prefix="docfmt_word_") as tmp:
         output_path = Path(tmp) / "reconstructed.docx"
         build_word_document(
