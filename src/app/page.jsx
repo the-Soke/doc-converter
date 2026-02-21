@@ -43,6 +43,10 @@ function normalizeApiError(err, apiBase) {
   return raw;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function DropZone({ label, accept, file, onFile, onClear, icon: Icon }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
@@ -139,6 +143,7 @@ export default function Home() {
   const [progress, setProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
   const [apiStatus, setApiStatus] = useState(API_BASE ? "checking" : "missing");
+  const [jobId, setJobId] = useState("");
 
   const [sourceMarkdown, setSourceMarkdown] = useState("");
   const [reconstructedMarkdown, setReconstructedMarkdown] = useState("");
@@ -184,36 +189,58 @@ export default function Home() {
     setSourceMarkdown("");
     setReconstructedMarkdown("");
     setExtractedJson(null);
+    setJobId("");
 
     try {
-      for (let i = 0; i <= 25; i += 5) {
-        await new Promise((r) => setTimeout(r, 60));
-        setProgress(i);
-      }
-
-      setStatus("processing");
-      setProgress(40);
-
       const formData = new FormData();
       formData.append("source_file", sourceFile);
       formData.append("template_file", templateFile);
 
-      const res = await fetch(`${API_BASE}/api/format`, {
+      const queueRes = await fetch(`${API_BASE}/api/jobs/format`, {
         method: "POST",
         body: formData,
       });
 
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(body || `Request failed with status ${res.status}`);
+      if (!queueRes.ok) {
+        const body = await queueRes.text();
+        throw new Error(body || `Failed to queue job: ${queueRes.status}`);
       }
 
-      const data = await res.json();
-      setProgress(100);
-      setSourceMarkdown(data.source_markdown || "");
-      setReconstructedMarkdown(data.reconstructed_markdown || "");
-      setExtractedJson(data.extracted_json || null);
-      setStatus("done");
+      const queueData = await queueRes.json();
+      const id = queueData.job_id;
+      setJobId(id);
+      setStatus("processing");
+      setProgress(5);
+
+      const maxPolls = 240;
+      for (let attempt = 0; attempt < maxPolls; attempt += 1) {
+        const statusRes = await fetch(`${API_BASE}/api/jobs/${id}`);
+        if (!statusRes.ok) {
+          const body = await statusRes.text();
+          throw new Error(body || `Job status failed: ${statusRes.status}`);
+        }
+
+        const job = await statusRes.json();
+        setProgress(typeof job.progress === "number" ? job.progress : 10);
+
+        if (job.status === "completed") {
+          const data = job.result;
+          setProgress(100);
+          setSourceMarkdown(data?.source_markdown || "");
+          setReconstructedMarkdown(data?.reconstructed_markdown || "");
+          setExtractedJson(data?.extracted_json || null);
+          setStatus("done");
+          return;
+        }
+
+        if (job.status === "failed") {
+          throw new Error(job.error || job.message || "Processing failed.");
+        }
+
+        await sleep(3000);
+      }
+
+      throw new Error("Processing timed out. The backend may be overloaded or restarting.");
     } catch (err) {
       setStatus("error");
       setErrorMessage(normalizeApiError(err, API_BASE));
@@ -298,6 +325,7 @@ export default function Home() {
         <p className={`text-xs mt-1 ${apiStatus === "ok" ? "text-emerald-600" : "text-amber-600"}`}>
           {apiStatusLabel}
         </p>
+        {jobId && <p className="text-xs mt-1 text-slate-500">Job ID: {jobId}</p>}
       </header>
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
